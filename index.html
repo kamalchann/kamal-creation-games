@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#080b12">
-  <title>Kamal Creation Games — Neon Snake</title>
+  <title>Kamal Creation Games — Mini Arcade</title>
   <style>
     :root {
       color-scheme: dark;
@@ -57,6 +57,36 @@
 
     .app {
       width: min(100%, 560px);
+    }
+
+    .game-picker {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin: 0 0 12px;
+      padding: 5px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+    }
+
+    .game-picker button {
+      min-height: 38px;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 650;
+      transition: color .15s ease, background .15s ease, border-color .15s ease;
+    }
+
+    .game-picker button:hover { color: var(--text); }
+    .game-picker button[aria-pressed="true"] {
+      color: var(--green);
+      background: var(--panel-raised);
+      border-color: var(--line);
     }
 
     .topline {
@@ -150,6 +180,7 @@
       box-shadow: inset 0 0 42px #0000002a;
     }
 
+    .board-wrap.wide { aspect-ratio: 4 / 3; }
     canvas { display: block; width: 100%; height: 100%; }
 
     .overlay {
@@ -227,6 +258,7 @@
       gap: 6px;
       margin: 16px auto 0;
     }
+    .mobile-controls[hidden] { display: none !important; }
     .mobile-controls button {
       display: grid;
       place-items: center;
@@ -267,13 +299,19 @@
         </div>
         <div>
           <h1>Kamal Creation Games</h1>
-          <p class="eyebrow">Neon Snake · A little focus goes a long way.</p>
+          <p class="eyebrow">Pick a game and jump in.</p>
         </div>
       </div>
       <div class="status" id="status" data-state="ready" aria-live="polite"><span class="status-dot"></span><span id="statusText">Ready</span></div>
     </header>
 
-    <section class="game-card" aria-label="Snake game">
+    <nav class="game-picker" aria-label="Choose a game">
+      <button type="button" data-game="snake" aria-pressed="true">🐍 Snake</button>
+      <button type="button" data-game="ttt" aria-pressed="false">✕ Tic-Tac-Toe</button>
+      <button type="button" data-game="pong" aria-pressed="false">◉ Pong</button>
+    </nav>
+
+    <section class="game-card" id="gameCard" aria-label="Snake game">
       <div class="scorebar">
         <div class="score-block"><span class="score-label">Score</span><span class="score-value" id="score">0</span></div>
         <div class="level" id="level">Level 1</div>
@@ -296,7 +334,7 @@
         <div class="keys" aria-label="Arrow keys or WASD to move">
           <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span>or WASD</span>
         </div>
-        <div class="help-copy">Space to pause <span aria-hidden="true">·</span> Eat to speed up</div>
+        <div class="help-copy" id="helpCopy">Space to pause <span aria-hidden="true">·</span> Eat to speed up</div>
       </div>
       <div class="mobile-controls" aria-label="Touch controls">
         <button type="button" data-dir="up" aria-label="Move up">↑</button>
@@ -313,6 +351,8 @@
       const ctx = canvas.getContext("2d");
       const scoreNode = document.querySelector("#score");
       const bestNode = document.querySelector("#best");
+      const scoreLabel = document.querySelector(".score-block:first-child .score-label");
+      const bestLabel = document.querySelector(".score-block:last-child .score-label");
       const levelNode = document.querySelector("#level");
       const status = document.querySelector("#status");
       const statusText = document.querySelector("#statusText");
@@ -320,22 +360,37 @@
       const overlayTitle = document.querySelector("#overlayTitle");
       const overlayMessage = document.querySelector("#overlayMessage");
       const startButton = document.querySelector("#startButton");
+      const boardWrap = document.querySelector(".board-wrap");
+      const gameCard = document.querySelector("#gameCard");
+      const helpCopy = document.querySelector("#helpCopy");
+      const mobileControls = document.querySelector(".mobile-controls");
       const cells = 24;
-      const cellSize = canvas.width / cells;
       const directions = {
         up: { x: 0, y: -1 },
         down: { x: 0, y: 1 },
         left: { x: -1, y: 0 },
         right: { x: 1, y: 0 }
       };
+      let activeGame = "snake";
+      let state = "ready";
+      let timer;
       let snake;
       let food;
       let direction;
       let nextDirection;
       let score = 0;
       let best = Number(localStorage.getItem("neon-snake-best")) || 0;
-      let state = "ready";
-      let timer;
+      let board;
+      let turn;
+      let xWins = 0;
+      let oWins = 0;
+      let draws = 0;
+      let playerScore = 0;
+      let cpuScore = 0;
+      let playerPaddle;
+      let cpuPaddle;
+      let ball;
+      const held = new Set();
 
       bestNode.textContent = best;
 
@@ -346,14 +401,74 @@
         overlay.hidden = next === "playing";
       }
 
-      function reset() {
+      function setupGame(game, fresh = true) {
+        clearTimeout(timer);
+        held.clear();
+        activeGame = game;
+        state = "ready";
+        document.querySelectorAll(".game-picker button").forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.game === game));
+        });
+        boardWrap.classList.toggle("wide", game === "pong");
+        canvas.height = game === "pong" ? 360 : 480;
+        if (game === "snake") {
+          gameCard.setAttribute("aria-label", "Snake game");
+          scoreLabel.textContent = "Score";
+          bestLabel.textContent = "Best";
+          scoreNode.textContent = "0";
+          bestNode.textContent = best;
+          levelNode.textContent = "Level 1";
+          helpCopy.innerHTML = 'Space to pause <span aria-hidden="true">·</span> Eat to speed up';
+          mobileControls.hidden = false;
+          overlayTitle.textContent = "Ready when you are";
+          overlayMessage.textContent = "Collect the glowing orbs. Don't run into yourself—or the walls.";
+          startButton.textContent = "Start game";
+          resetSnake();
+        } else if (game === "ttt") {
+          gameCard.setAttribute("aria-label", "Tic-Tac-Toe game");
+          scoreLabel.textContent = "X wins";
+          bestLabel.textContent = "O wins";
+          scoreNode.textContent = xWins;
+          bestNode.textContent = oWins;
+          levelNode.textContent = `Draws ${draws}`;
+          helpCopy.textContent = "Two players · Click a square";
+          mobileControls.hidden = true;
+          overlayTitle.textContent = "Three in a row";
+          overlayMessage.textContent = "Challenge a friend on the same screen. X takes the first turn.";
+          startButton.textContent = "Let's play";
+          resetTicTacToe();
+        } else {
+          gameCard.setAttribute("aria-label", "Pong game");
+          scoreLabel.textContent = "You";
+          bestLabel.textContent = "CPU";
+          scoreNode.textContent = "0";
+          bestNode.textContent = "0";
+          levelNode.textContent = "First to 5";
+          helpCopy.textContent = "W / S or ↑ / ↓ to move";
+          mobileControls.hidden = false;
+          overlayTitle.textContent = "Ready to rally?";
+          overlayMessage.textContent = "Keep the ball in play and beat the CPU to five.";
+          startButton.textContent = "Start match";
+          if (fresh) {
+            playerScore = 0;
+            cpuScore = 0;
+          }
+          resetPong();
+        }
+        setState("ready");
+      }
+
+      function resetSnake() {
         snake = [{ x: 11, y: 12 }, { x: 10, y: 12 }, { x: 9, y: 12 }];
         direction = directions.right;
         nextDirection = direction;
         score = 0;
         food = placeFood();
-        updateScore();
-        draw();
+        if (activeGame === "snake") {
+          scoreNode.textContent = score;
+          levelNode.textContent = `Level ${Math.floor(score / 5) + 1}`;
+        }
+        drawSnake();
       }
 
       function placeFood() {
@@ -364,37 +479,50 @@
         return point;
       }
 
-      function updateScore() {
-        scoreNode.textContent = score;
-        levelNode.textContent = `Level ${Math.floor(score / 5) + 1}`;
-      }
-
       function tickDelay() {
         return Math.max(62, 145 - Math.floor(score / 3) * 9);
       }
 
       function start() {
-        if (state === "ready" || state === "over") reset();
-        clearTimeout(timer);
-        setState("playing");
-        timer = setTimeout(tick, tickDelay());
+        if (activeGame === "snake") {
+          if (state === "ready" || state === "over") resetSnake();
+          setState("playing");
+          clearTimeout(timer);
+          timer = setTimeout(tickSnake, tickDelay());
+        } else if (activeGame === "pong") {
+          if (state === "over") {
+            playerScore = 0;
+            cpuScore = 0;
+            scoreNode.textContent = "0";
+            bestNode.textContent = "0";
+          }
+          if (state === "ready" || state === "over") resetPong();
+          setState("playing");
+          clearTimeout(timer);
+          timer = setTimeout(tickPong, 16);
+        } else {
+          if (state === "over") resetTicTacToe();
+          drawTicTacToe();
+          setState("playing");
+        }
       }
 
-      function tick() {
-        if (state !== "playing") return;
+      function tickSnake() {
+        if (state !== "playing" || activeGame !== "snake") return;
         direction = nextDirection;
         const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
         const ate = head.x === food.x && head.y === food.y;
         const body = ate ? snake : snake.slice(0, -1);
         if (head.x < 0 || head.x >= cells || head.y < 0 || head.y >= cells ||
             body.some(segment => segment.x === head.x && segment.y === head.y)) {
-          endGame();
+          finishSnake();
           return;
         }
         snake.unshift(head);
         if (ate) {
           score += 1;
-          updateScore();
+          scoreNode.textContent = score;
+          levelNode.textContent = `Level ${Math.floor(score / 5) + 1}`;
           if (score > best) {
             best = score;
             bestNode.textContent = best;
@@ -404,11 +532,11 @@
         } else {
           snake.pop();
         }
-        draw();
-        timer = setTimeout(tick, tickDelay());
+        drawSnake();
+        timer = setTimeout(tickSnake, tickDelay());
       }
 
-      function endGame() {
+      function finishSnake() {
         clearTimeout(timer);
         setState("over");
         overlayTitle.textContent = "Game over";
@@ -423,14 +551,56 @@
         nextDirection = candidate;
       }
 
-      function draw() {
+      function drawSnake() {
+        const size = canvas.width / cells;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = "#090e17";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        drawGrid(size);
+        const fx = (food.x + .5) * size;
+        const fy = (food.y + .5) * size;
+        ctx.save();
+        ctx.shadowColor = "#ff5fba";
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = "#ff5fba";
+        ctx.beginPath();
+        ctx.arc(fx, fy, size * .31, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = "#fff";
+        ctx.globalAlpha = .8;
+        ctx.beginPath();
+        ctx.arc(fx - 2, fy - 2, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        snake.forEach((segment, index) => {
+          const inset = index === 0 ? 2 : 2.5;
+          ctx.save();
+          ctx.shadowColor = "#81ffb3";
+          ctx.shadowBlur = index === 0 ? 15 : 5;
+          ctx.fillStyle = index === 0 ? "#a4ffc9" : `rgba(94, 243, 157, ${Math.max(.5, 1 - index * .035)})`;
+          roundedRect(ctx, segment.x * size + inset, segment.y * size + inset, size - inset * 2, size - inset * 2, index === 0 ? 6 : 4);
+          ctx.fill();
+          ctx.restore();
+        });
+        const head = snake[0];
+        const eyeX = head.x * size + size / 2;
+        const eyeY = head.y * size + size / 2;
+        const forward = direction.x ? { x: direction.x * 3, y: 0 } : { x: 0, y: direction.y * 3 };
+        const side = direction.x ? { x: 0, y: 4 } : { x: 4, y: 0 };
+        ctx.fillStyle = "#0b1a13";
+        for (const sign of [-1, 1]) {
+          ctx.beginPath();
+          ctx.arc(eyeX + forward.x + side.x * sign, eyeY + forward.y + side.y * sign, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawGrid(size) {
         ctx.strokeStyle = "#ffffff0a";
         ctx.lineWidth = 1;
         for (let i = 1; i < cells; i++) {
-          const pos = i * cellSize + .5;
+          const pos = i * size + .5;
           ctx.beginPath();
           ctx.moveTo(pos, 0);
           ctx.lineTo(pos, canvas.height);
@@ -440,48 +610,203 @@
           ctx.lineTo(canvas.width, pos);
           ctx.stroke();
         }
+      }
 
-        const fx = (food.x + .5) * cellSize;
-        const fy = (food.y + .5) * cellSize;
-        ctx.save();
-        ctx.shadowColor = "#ff5fba";
-        ctx.shadowBlur = 18;
-        ctx.fillStyle = "#ff5fba";
-        ctx.beginPath();
-        ctx.arc(fx, fy, cellSize * .31, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-        ctx.fillStyle = "#fff";
-        ctx.globalAlpha = .8;
-        ctx.beginPath();
-        ctx.arc(fx - 2, fy - 2, 2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
+      function resetTicTacToe() {
+        board = Array(9).fill("");
+        turn = "X";
+        drawTicTacToe();
+      }
 
-        snake.forEach((segment, index) => {
-          const inset = index === 0 ? 2 : 2.5;
-          const x = segment.x * cellSize + inset;
-          const y = segment.y * cellSize + inset;
-          const size = cellSize - inset * 2;
+      function drawTicTacToe() {
+        const size = canvas.width / 3;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#090e17";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "#314054";
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+        for (let i = 1; i < 3; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * size, 56);
+          ctx.lineTo(i * size, canvas.height - 56);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(56, i * size);
+          ctx.lineTo(canvas.width - 56, i * size);
+          ctx.stroke();
+        }
+        board.forEach((mark, index) => {
+          if (!mark) return;
+          const x = (index % 3 + .5) * size;
+          const y = (Math.floor(index / 3) + .5) * size;
           ctx.save();
-          ctx.shadowColor = "#81ffb3";
-          ctx.shadowBlur = index === 0 ? 15 : 5;
-          ctx.fillStyle = index === 0 ? "#a4ffc9" : `rgba(94, 243, 157, ${Math.max(.5, 1 - index * .035)})`;
-          roundedRect(ctx, x, y, size, size, index === 0 ? 6 : 4);
-          ctx.fill();
+          ctx.strokeStyle = mark === "X" ? "#81ffb3" : "#ff5fba";
+          ctx.shadowColor = ctx.strokeStyle;
+          ctx.shadowBlur = 18;
+          ctx.lineWidth = 12;
+          ctx.lineCap = "round";
+          if (mark === "X") {
+            ctx.beginPath();
+            ctx.moveTo(x - 42, y - 42);
+            ctx.lineTo(x + 42, y + 42);
+            ctx.moveTo(x + 42, y - 42);
+            ctx.lineTo(x - 42, y + 42);
+            ctx.stroke();
+          } else {
+            ctx.beginPath();
+            ctx.arc(x, y, 48, 0, Math.PI * 2);
+            ctx.stroke();
+          }
           ctx.restore();
         });
+      }
 
-        const head = snake[0];
-        const eyeBaseX = head.x * cellSize + cellSize / 2;
-        const eyeBaseY = head.y * cellSize + cellSize / 2;
-        const eyeOffset = direction.x ? { x: direction.x * 3, y: 0 } : { x: 0, y: direction.y * 3 };
-        const sideOffset = direction.x ? { x: 0, y: 4 } : { x: 4, y: 0 };
-        ctx.fillStyle = "#0b1a13";
-        for (const side of [-1, 1]) {
-          ctx.beginPath();
-          ctx.arc(eyeBaseX + eyeOffset.x + sideOffset.x * side, eyeBaseY + eyeOffset.y + sideOffset.y * side, 1.5, 0, Math.PI * 2);
-          ctx.fill();
+      function playTicTacToe(event) {
+        if (activeGame !== "ttt" || state !== "playing") return;
+        const rect = canvas.getBoundingClientRect();
+        const x = (event.clientX - rect.left) * canvas.width / rect.width;
+        const y = (event.clientY - rect.top) * canvas.height / rect.height;
+        const col = Math.min(2, Math.floor(x / (canvas.width / 3)));
+        const row = Math.min(2, Math.floor(y / (canvas.height / 3)));
+        const index = row * 3 + col;
+        if (board[index]) return;
+        board[index] = turn;
+        drawTicTacToe();
+        const winner = getWinner();
+        if (winner) {
+          if (winner === "X") xWins++;
+          else oWins++;
+          scoreNode.textContent = xWins;
+          bestNode.textContent = oWins;
+          finishTicTacToe(`${winner} wins!`, `${winner} got three in a row. Rematch?`);
+        } else if (board.every(Boolean)) {
+          draws++;
+          levelNode.textContent = `Draws ${draws}`;
+          finishTicTacToe("It's a draw!", "Nobody got three in a row. Play again?");
+        } else {
+          turn = turn === "X" ? "O" : "X";
+        }
+      }
+
+      function getWinner() {
+        const lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
+        for (const [a, b, c] of lines) {
+          if (board[a] && board[a] === board[b] && board[a] === board[c]) return board[a];
+        }
+        return "";
+      }
+
+      function finishTicTacToe(title, message) {
+        setState("over");
+        overlayTitle.textContent = title;
+        overlayMessage.textContent = message;
+        startButton.textContent = "New round";
+      }
+
+      function resetPong() {
+        playerPaddle = { x: 22, y: canvas.height / 2 - 35, w: 9, h: 70 };
+        cpuPaddle = { x: canvas.width - 31, y: canvas.height / 2 - 35, w: 9, h: 70 };
+        ball = { x: canvas.width / 2, y: canvas.height / 2, vx: 4, vy: 2.4, r: 7 };
+        drawPong();
+      }
+
+      function tickPong() {
+        if (state !== "playing" || activeGame !== "pong") return;
+        const move = held.has("up") ? -6 : held.has("down") ? 6 : 0;
+        playerPaddle.y = clamp(playerPaddle.y + move, 8, canvas.height - playerPaddle.h - 8);
+        const target = ball.y - cpuPaddle.h / 2;
+        cpuPaddle.y = clamp(cpuPaddle.y + clamp(target - cpuPaddle.y, -3.4, 3.4), 8, canvas.height - cpuPaddle.h - 8);
+        ball.x += ball.vx;
+        ball.y += ball.vy;
+        if (ball.y - ball.r <= 4 || ball.y + ball.r >= canvas.height - 4) ball.vy *= -1;
+        if (ball.vx < 0 && ball.x - ball.r <= playerPaddle.x + playerPaddle.w &&
+            ball.y >= playerPaddle.y && ball.y <= playerPaddle.y + playerPaddle.h) {
+          bouncePong(playerPaddle);
+        } else if (ball.vx > 0 && ball.x + ball.r >= cpuPaddle.x &&
+            ball.y >= cpuPaddle.y && ball.y <= cpuPaddle.y + cpuPaddle.h) {
+          bouncePong(cpuPaddle);
+        }
+        if (ball.x < -ball.r) {
+          cpuScore++;
+          bestNode.textContent = cpuScore;
+          if (cpuScore >= 5) {
+            finishPong(false);
+            return;
+          }
+          resetPong();
+        } else if (ball.x > canvas.width + ball.r) {
+          playerScore++;
+          scoreNode.textContent = playerScore;
+          if (playerScore >= 5) {
+            finishPong(true);
+            return;
+          }
+          resetPong();
+        }
+        drawPong();
+        timer = setTimeout(tickPong, 16);
+      }
+
+      function bouncePong(paddle) {
+        const relative = (ball.y - (paddle.y + paddle.h / 2)) / (paddle.h / 2);
+        const speed = Math.min(8, Math.hypot(ball.vx, ball.vy) + .25);
+        ball.vx = (paddle === playerPaddle ? 1 : -1) * speed * .88;
+        ball.vy = clamp(relative, -1, 1) * speed * .72;
+        ball.x = paddle === playerPaddle ? paddle.x + paddle.w + ball.r : paddle.x - ball.r;
+      }
+
+      function finishPong(won) {
+        clearTimeout(timer);
+        setState("over");
+        overlayTitle.textContent = won ? "You win!" : "CPU wins";
+        overlayMessage.textContent = `Final score: ${playerScore}–${cpuScore}. ${won ? "Great rally!" : "Run it back?"}`;
+        startButton.textContent = "Play again";
+      }
+
+      function drawPong() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#090e17";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.setLineDash([9, 11]);
+        ctx.strokeStyle = "#ffffff20";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(canvas.width / 2, 16);
+        ctx.lineTo(canvas.width / 2, canvas.height - 16);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#81ffb3";
+        ctx.shadowColor = "#81ffb3";
+        ctx.shadowBlur = 14;
+        roundedRect(ctx, playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h, 5);
+        ctx.fill();
+        ctx.fillStyle = "#ff5fba";
+        ctx.shadowColor = "#ff5fba";
+        roundedRect(ctx, cpuPaddle.x, cpuPaddle.y, cpuPaddle.w, cpuPaddle.h, 5);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+        ctx.fillStyle = "#edf4ff";
+        ctx.shadowColor = "#edf4ff";
+        ctx.shadowBlur = 16;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+
+      function drawIdlePong() {
+        resetPong();
+      }
+
+      function togglePause() {
+        if (state === "playing") {
+          clearTimeout(timer);
+          setState("paused");
+          overlayTitle.textContent = "Take a breather";
+          overlayMessage.textContent = "Your game is paused. Jump back in when you're ready.";
+          startButton.textContent = "Resume";
+        } else if (state === "paused") {
+          start();
         }
       }
 
@@ -490,17 +815,13 @@
         context.roundRect(x, y, width, height, radius);
       }
 
-      function togglePause() {
-        if (state === "playing") {
-          clearTimeout(timer);
-          setState("paused");
-          overlayTitle.textContent = "Take a breather";
-          overlayMessage.textContent = "Your run is paused. Jump back in when you're ready.";
-          startButton.textContent = "Resume";
-        } else if (state === "paused") {
-          start();
-        }
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
       }
+
+      document.querySelectorAll(".game-picker button").forEach(button => {
+        button.addEventListener("click", () => setupGame(button.dataset.game));
+      });
 
       document.addEventListener("keydown", event => {
         const keys = {
@@ -509,30 +830,40 @@
           ArrowLeft: "left", a: "left", A: "left",
           ArrowRight: "right", d: "right", D: "right"
         };
-        if (keys[event.key]) {
+        if (activeGame === "pong" && (keys[event.key] === "up" || keys[event.key] === "down")) {
+          event.preventDefault();
+          held.add(keys[event.key]);
+        } else if (activeGame === "snake" && keys[event.key]) {
           event.preventDefault();
           setDirection(keys[event.key]);
-        } else if (event.code === "Space") {
+        } else if (event.code === "Space" && activeGame !== "ttt") {
           event.preventDefault();
           if (state === "ready" || state === "over") start();
           else togglePause();
         }
       });
 
-      document.querySelectorAll(".mobile-controls button").forEach(button => {
-        button.addEventListener("pointerdown", () => setDirection(button.dataset.dir));
-      });
-      startButton.addEventListener("click", () => {
-        if (state === "paused") start();
-        else {
-          overlayTitle.textContent = "Ready when you are";
-          overlayMessage.textContent = "Collect the glowing orbs. Don't run into yourself—or the walls.";
-          startButton.textContent = "Start game";
-          start();
-        }
+      document.addEventListener("keyup", event => {
+        const key = { ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" }[event.key];
+        if (key) held.delete(key);
       });
 
-      reset();
+      canvas.addEventListener("pointerdown", playTicTacToe);
+      mobileControls.querySelectorAll("button").forEach(button => {
+        button.addEventListener("pointerdown", event => {
+          if (activeGame === "snake") setDirection(button.dataset.dir);
+          else if (activeGame === "pong") {
+            event.preventDefault();
+            held.add(button.dataset.dir);
+          }
+        });
+        button.addEventListener("pointerup", () => held.delete(button.dataset.dir));
+        button.addEventListener("pointerleave", () => held.delete(button.dataset.dir));
+        button.addEventListener("pointercancel", () => held.delete(button.dataset.dir));
+      });
+
+      startButton.addEventListener("click", start);
+      setupGame("snake");
     })();
   </script>
 </body>
